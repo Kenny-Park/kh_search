@@ -15,6 +15,7 @@ type Edge struct {
 	Value       int
 	EOF         bool
 	Left        map[int]*Edge   // child
+	LeftList    []*Edge         // 모든노드 검색
 	Right       *Edge           // header
 	ChosungLeft map[int][]*Edge // 초성용 child
 	Fl          *Edge           //failure link
@@ -186,6 +187,8 @@ func (f *KhSearch) AddEdge(t *Edge, word int, depth int, EOF bool, isChosung boo
 			Fl:          f.SetFailure(t, word),
 		}
 		t.Left[word] = r
+		t.LeftList = append(t.LeftList, r)
+
 		if len(f.Bfs) <= depth {
 			depthMap := make(map[int][]*Edge)
 			f.Bfs = append(f.Bfs, depthMap)
@@ -225,10 +228,10 @@ func (f *KhSearch) ForestAllSearch(t *Edge, result []string, pre []int, jasaw []
 		}
 	}
 
-	mapKeys := reflect.ValueOf(t.Left).MapKeys()
-	if len(mapKeys) > 0 {
-		for _, key := range mapKeys {
-			if obj, ok := t.Left[int(key.Int())]; ok {
+	//mapKeys := reflect.ValueOf(t.Left).MapKeys()
+	if len(t.LeftList) > 0 {
+		for _, key := range t.LeftList {
+			if obj, ok := t.Left[key.Value]; ok {
 				result = f.ForestAllSearch(obj, result, pre, jasaw, false, visitmap)
 			} else {
 				result = f.ForestAllSearch(nil, result, pre, jasaw, false, visitmap)
@@ -401,11 +404,9 @@ func (f *KhSearch) VerticalSearch(edge *Edge, words []int, index int, results []
 	edgeID := fmt.Sprintf("%p", &edge)
 	_, ok := visitmap[edgeID]
 
-	// 엣지의 종단 체크
-	if edge == nil || ok {
+	if edge == nil || ok || index < 0 {
 		return results
 	}
-
 	a, ok := edge.Left[words[index]]
 	if ok {
 		visitmap[edgeID] = true
@@ -453,16 +454,21 @@ func (f *KhSearch) ChosungVerticalSearch(edge *Edge, words []int, index int, res
 	a, ok := edge.ChosungLeft[words[index]]
 	index += 3
 
+	if index < 0 {
+		return results
+	}
+
 	if ok {
 		visitmap[edgeID] = true
 		for i := 0; i < len(a); i++ {
 			if index >= len(words) {
-				return f.ForestAllSearch(a[i], results, f.PreString(a[i], nil)[1:], nil, true, visitmap)
+				results = f.ForestAllSearch(a[i], results, f.PreString(a[i], nil)[1:], nil, true, visitmap)
 			}
 			results = f.ChosungVerticalSearch(a[i], words, index, results, nil, visitmap)
 		}
 	}
-	return f.ChosungVerticalSearch(nil, words, index, results, nil, visitmap)
+	results = f.ChosungVerticalSearch(nil, words, index, results, nil, visitmap)
+	return results
 }
 
 // 메인함수
@@ -481,6 +487,8 @@ func main() {
 
 	var raws []string
 
+	fmt.Println("rows", len(rows))
+
 	// 행,열 읽기
 	for i, row := range rows {
 		for j := range row {
@@ -497,14 +505,11 @@ func main() {
 
 	startTime := time.Now()
 
-	fmt.Println(f.HorizonSearch("삼성"))
-	fmt.Println(f.HorizonSearch("SDI"))
-	fmt.Println(f.HorizonSearch("성SD"))
-	fmt.Println(f.HorizonSearch("3호"))
-	fmt.Println(f.HorizonSearch("ㄱㅇ"))
+	//fmt.Println(f.HorizonSearch("ㅅㅅㄱ"))
+	fmt.Println(f.HorizonSearch("신세계"))
 
 	elapsedTime := time.Since(startTime)
 
-	fmt.Println("실행시간: %s\n", elapsedTime)
+	fmt.Printf("실행시간: %s\n", elapsedTime)
 
 }
