@@ -451,12 +451,12 @@ func (f *KhSearch) ChosungVerticalSearch(edge *Edge, words []int, index int, res
 		return results
 	}
 
-	a, ok := edge.ChosungLeft[words[index]]
-	index += 3
-
-	if index < 0 {
+	if index < 0 || index >= len(words) {
 		return results
 	}
+
+	a, ok := edge.ChosungLeft[words[index]]
+	index += 3
 
 	if ok {
 		visitmap[edgeID] = true
@@ -474,7 +474,7 @@ func (f *KhSearch) ChosungVerticalSearch(edge *Edge, words []int, index int, res
 // 메인함수
 func main() {
 
-	file, err := os.Open(`./data.txt`)
+	file, err := os.Open(`./kr_korean.txt`)
 
 	// csv reader 생성
 	rdr := csv.NewReader(bufio.NewReader(file))
@@ -506,7 +506,7 @@ func main() {
 	startTime := time.Now()
 
 	//fmt.Println(f.HorizonSearch("ㅅㅅㄱ"))
-	fmt.Println(f.HorizonSearch("신세계"))
+	fmt.Println(f.HorizonSearch("ㅇㅈ"))
 
 	elapsedTime := time.Since(startTime)
 
