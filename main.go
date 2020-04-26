@@ -15,7 +15,7 @@ func main() {
 
 	fmt.Println(runtime.NumCPU())
 	runtime.GOMAXPROCS(8)
-	file, err := os.Open(`./kr_korean.txt`)
+	file, err := os.Open(`./data.txt`)
 
 	// csv reader 생성
 	rdr := csv.NewReader(bufio.NewReader(file))
