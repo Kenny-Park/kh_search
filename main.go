@@ -5,14 +5,15 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"reflect"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
-	"sync"
 )
 
 type Result struct {
@@ -28,22 +29,41 @@ type Edge struct {
 	Right       *Edge           // header
 	ChosungLeft map[int][]*Edge // 초성용 child
 	Fl          *Edge           //failure link
-	Visited map[string]bool
+	Visited     map[string]bool
 }
 
 type ChannelObj struct {
-	MergeChan  chan []string
-	MergeDone  chan []string
+	MergeChan chan []string
+	MergeDone chan []string
 }
 
 type KhSearch struct {
-	Raws []string
-	Bfs  map[int][]*Edge
-	Root *Edge
+	Raws  []string
+	Bfs   map[int][]*Edge
+	Root  *Edge
+	mutex sync.Mutex
+}
+
+type ResultValue struct {
+	results []string
+	m       sync.Mutex
+}
+
+func (r *ResultValue) GetResults() []string {
+	r.m.Lock()
+	defer r.m.Unlock()
+	return r.results
+}
+func (r *ResultValue) Append(val []string) {
+	r.m.Lock()
+	defer r.m.Unlock()
+	r.results = append(r.results, val...)
+	log.Println(r.results)
 }
 
 var mutex = &sync.RWMutex{}
 
+//초성,중성,종성 세팅
 var CHOUNICODE []int = []int{0x3131, 0x3132, 0x3134, 0x3137, 0x3138, 0x3139, 0x3141, 0x3142, 0x3143, 0x3145, 0x3146,
 	0x3147, 0x3148, 0x3149, 0x314a, 0x314b, 0x314c, 0x314d, 0x314e}
 var JUNGUNICODE []int = []int{0x314f, 0x3150, 0x3151, 0x3152, 0x3153, 0x3154, 0x3155, 0x3156, 0x3157, 0x3158, 0x3159,
@@ -57,7 +77,6 @@ func (f *KhSearch) MakeTree() *Edge {
 
 	f.Root = f.addEdge(nil, -1, 0, false, false, nil)
 	edge := f.Root
-
 	for _, item := range f.Raws {
 		words := GetWordAtRows(item)
 		var jamos []int
@@ -103,6 +122,26 @@ func (f *KhSearch) ascii(keyword string) int {
 		return (hex&0x0F)<<18 | (int(keyword[1])&0x3F)<<12 | (int(keyword[2])&0x3F)<<6 | (int(keyword[3]) & 0x3F)
 	}
 	return 0
+}
+
+func (f *KhSearch) AddNewList(v string) {
+	edge := f.Root
+	words := GetWordAtRows(v)
+	var jamos []int
+	for _, word := range words {
+		jamos = append(jamos, f.getJamo(word)...)
+	}
+	for d, jamo := range jamos {
+		isChosung := false
+		if d%3 == 0 && d > 0 {
+			isChosung = true
+		}
+		if d == len(jamos)-1 {
+			edge = f.addEdge(edge, jamo, d, true, isChosung, jamos)
+		} else {
+			edge = f.addEdge(edge, jamo, d, false, isChosung, jamos)
+		}
+	}
 }
 
 // 한글자를 자모 배열로 변경
@@ -194,6 +233,7 @@ func (f *KhSearch) addEdge(t *Edge, word int, depth int, EOF bool, isChosung boo
 	}
 	// non header
 	var r *Edge
+
 	if _, ok := t.Left[word]; !ok {
 		r = &Edge{
 			Value:       word,
@@ -206,30 +246,20 @@ func (f *KhSearch) addEdge(t *Edge, word int, depth int, EOF bool, isChosung boo
 		t.Left[word] = r
 		t.LeftList = append(t.LeftList, r)
 
-		/*if len(f.Bfs) <= depth {
-			depthMap := make(map[int][]*Edge)
-			f.Bfs = append(f.Bfs, depthMap)
-		}*/
 		tmp := f.Bfs[word]
 		f.Bfs[word] = append(tmp, r)
+
 	} else {
 		r = t.Left[word]
 	}
-
 	if isChosung {
 		f.findChosungEdge(r, word)
 	}
-
 	return r
 }
 
 // 전채를 검색한다.
-func (f *KhSearch) forestAllSearch(t *Edge, result []string, pre []int, jasaw []int, isFirst bool, channelObj *ChannelObj) []string {
-	
-	/*channelObj.VisitCheck <- fmt.Sprintf("%p", &t)
-	if <-channelObj.VisitDone == false {
-		return result
-	}*/
+func (f *KhSearch) forestAllSearch(t *Edge, result []string, pre []int, jasaw []int, isFirst bool) []string {
 
 	if t == nil {
 		return result
@@ -241,18 +271,16 @@ func (f *KhSearch) forestAllSearch(t *Edge, result []string, pre []int, jasaw []
 			result = append(result, s)
 		}
 	}
-
-	//mapKeys := reflect.ValueOf(t.Left).MapKeys()
 	if len(t.LeftList) > 0 {
 		for _, key := range t.LeftList {
 			if obj, ok := t.Left[key.Value]; ok {
-				result = f.forestAllSearch(obj, result, pre, jasaw, false, channelObj)
+				result = f.forestAllSearch(obj, result, pre, jasaw, false)
 			} else {
-				result = f.forestAllSearch(nil, result, pre, jasaw, false, channelObj)
+				result = f.forestAllSearch(nil, result, pre, jasaw, false)
 			}
 		}
 	}
-	result = f.forestAllSearch(nil, result, pre, jasaw, false, channelObj)
+	result = f.forestAllSearch(nil, result, pre, jasaw, false)
 	return result
 }
 
@@ -277,6 +305,8 @@ func (f *KhSearch) Search(word string) []string {
 	var paramByte []byte
 	var resultStrings []string
 
+	log.Println("words :", word)
+
 	paramByte = []byte(word)
 
 	for i := 0; i < len(word); i++ {
@@ -298,6 +328,8 @@ func (f *KhSearch) Search(word string) []string {
 
 	chosungSearchOper := true
 
+	rv := &ResultValue{}
+
 	//fmt.Println(jamos)
 
 	lastChosung := jamos[len(jamos)-3 : len(jamos)]
@@ -310,12 +342,6 @@ func (f *KhSearch) Search(word string) []string {
 	if !chosungSearchOper && len(lastChosung) == 3 && lastChosung[1] == 0 && lastChosung[2] == 0 {
 		jamos = jamos[:len(jamos)-2]
 	}
-
-	channelObj := &ChannelObj{}  
-
-	channelObj.MergeChan = make(chan []string)
-	channelObj.MergeDone = make(chan []string)
-
 	var threadCheck = 4
 
 	edges, ok := f.Bfs[jamos[0]]
@@ -324,29 +350,37 @@ func (f *KhSearch) Search(word string) []string {
 			return nil
 		}
 	}
-	//fmt.Println("threadCheck : ", threadCheck,  "len(edges) : ", len(edges) )
+
+	wg := sync.WaitGroup{}
+	// 쓰레드를 다수 사용할 경우
 	if ok {
-		if len(edges)/threadCheck > 1000 {
+		if len(edges)/threadCheck > 20 {
 			for i := 1; i <= threadCheck; i++ {
+				wg.Add(1)
 				a := i * (len(edges) / threadCheck)
 				if i*(len(edges)/threadCheck) > len(edges) {
 					a = len(edges)
 				}
-				go f.searchExecutor(edges[(i-1)*(len(edges)/threadCheck):a], jamos, chosungSearchOper, jasaws, channelObj)
+				go f.searchExecutor(edges[(i-1)*(len(edges)/threadCheck):a],
+					jamos,
+					chosungSearchOper,
+					jasaws,
+					&wg,
+					rv,
+				)
 			}
-		} else {
+		} else { // 쓰레드가 1개일 경우
+			wg.Add(1)
 			threadCheck = 1
-			go f.searchExecutor(edges, jamos, chosungSearchOper, jasaws, channelObj)
+			go f.searchExecutor(edges, jamos, chosungSearchOper, jasaws, &wg, rv)
 		}
 	} else {
 		return nil
 	}
-	go f.mergeCheck(threadCheck, channelObj)
-
-	mergeDoneResults := <-channelObj.MergeDone
+	wg.Wait()
 	dupCheck := make(map[string]bool)
-
-	for _, item := range mergeDoneResults {
+	mergedResults := rv.GetResults()
+	for _, item := range mergedResults {
 		if _, ok := dupCheck[item]; !ok {
 			resultStrings = append(resultStrings, item)
 			dupCheck[item] = true
@@ -372,18 +406,20 @@ func (f *KhSearch) mergeCheck(threadCheck int, channelObj *ChannelObj) {
 }
 
 // 추후 go routine을 이용한 검색으로 변경
-func (f *KhSearch) searchExecutor(edges []*Edge, jamos []int, chosungSearchOper bool, jasaws []int, channelObj *ChannelObj) {
+func (f *KhSearch) searchExecutor(edges []*Edge, jamos []int, chosungSearchOper bool, jasaws []int, wg *sync.WaitGroup, result *ResultValue) {
 	var resultStrings []string
+	defer wg.Done()
 	for _, edge := range edges {
 		if chosungSearchOper {
-			reChosung := f.chosungverticalSearch(edge, jamos, 3, nil, nil, channelObj)
+			reChosung := f.chosungverticalSearch(edge, jamos, 3, nil, nil)
 			if len(reChosung) > 0 {
 				for _, item := range reChosung {
 					resultStrings = append(resultStrings, item)
 				}
 			}
 		} else {
-			re := f.verticalSearch(edge, jamos, 1, nil, jasaws, channelObj)
+			re := f.verticalSearch(edge, jamos, 1, nil, jasaws)
+
 			if len(re) > 0 {
 				pre := f.preString(edge.Right, nil)
 				for _, item := range re {
@@ -392,7 +428,7 @@ func (f *KhSearch) searchExecutor(edges []*Edge, jamos []int, chosungSearchOper 
 			}
 		}
 	}
-	channelObj.MergeChan <- resultStrings
+	result.Append(resultStrings)
 }
 
 // UTF-8 -> string 변환
@@ -457,7 +493,7 @@ func (f *KhSearch) jamosToString(item2 []int) string {
 }
 
 // 깊이 검색
-func (f *KhSearch) verticalSearch(edge *Edge, words []int, index int, results []string, jasaw []int, channelObj *ChannelObj) ([]string) {
+func (f *KhSearch) verticalSearch(edge *Edge, words []int, index int, results []string, jasaw []int) []string {
 
 	if edge == nil || index < 0 {
 		return results
@@ -470,11 +506,11 @@ func (f *KhSearch) verticalSearch(edge *Edge, words []int, index int, results []
 			if a.EOF {
 				results = append(results, f.jamosToString(jasaw))
 			}
-			return f.forestAllSearch(a, results, jasaw, nil, true, channelObj)
+			return f.forestAllSearch(a, results, jasaw, nil, true)
 		}
-		return f.verticalSearch(a, words, index, results, jasaw, channelObj)
+		return f.verticalSearch(a, words, index, results, jasaw)
 	}
-	return f.verticalSearch(nil, words, index, results, jasaw, channelObj)
+	return f.verticalSearch(nil, words, index, results, jasaw)
 
 }
 
@@ -493,7 +529,7 @@ func (f *KhSearch) failureCheck(t *Edge, jasaw []int) ([]int, bool) {
 }
 
 // 초성 검색
-func (f *KhSearch) chosungverticalSearch(edge *Edge, words []int, index int, results []string, jasaw []int, channelObj *ChannelObj) []string {
+func (f *KhSearch) chosungverticalSearch(edge *Edge, words []int, index int, results []string, jasaw []int) []string {
 	if edge == nil {
 		return results
 	}
@@ -508,31 +544,37 @@ func (f *KhSearch) chosungverticalSearch(edge *Edge, words []int, index int, res
 	if ok {
 		for i := 0; i < len(a); i++ {
 			if index >= len(words) {
-				results = f.forestAllSearch(a[i], results, f.preString(a[i], nil)[1:], nil, true, channelObj)
+				results = f.forestAllSearch(a[i], results, f.preString(a[i], nil)[1:], nil, true)
 			}
-			results = f.chosungverticalSearch(a[i], words, index, results, nil, channelObj)
+			results = f.chosungverticalSearch(a[i], words, index, results, nil)
 		}
 	}
-	results = f.chosungverticalSearch(nil, words, index, results, nil, channelObj)
+	results = f.chosungverticalSearch(nil, words, index, results, nil)
 	return results
 }
 
 // 메인함수
 func main() {
 	runtime.GOMAXPROCS(4)
+	rp, _ := os.Getwd()
 
-	file, err := os.Open(`./kr_korean.txt`)
+	var rows [][]string
+	func() {
+		file, err := os.Open(rp + `/data.txt`)
+		defer file.Close()
 
-	// csv reader 생성
-	rdr := csv.NewReader(bufio.NewReader(file))
+		// csv reader 생성
+		rdr := csv.NewReader(bufio.NewReader(file))
 
-	// csv 내용 모두 읽기
-	rows, err := rdr.ReadAll()
-	if err != nil {
-		panic(err)
-	}
+		// csv 내용 모두 읽기
+		rows, err = rdr.ReadAll()
+		if err != nil {
+			panic(err)
+		}
+	}()
 
 	var raws []string
+
 	// 행,열 읽기
 	for i, row := range rows {
 		for j := range row {
@@ -544,8 +586,47 @@ func main() {
 		Raws: raws,
 		Bfs:  make(map[int][]*Edge),
 	}
+
 	// 트라이 트리 만들기
 	f.MakeTree()
+	go func() {
+		t := time.NewTicker(time.Minute)
+		for {
+			select {
+			case <-t.C:
+
+				log.Println("새로운 데이타를 가져옵니다.")
+				file2, err := os.Open(rp + `/data_new.txt`)
+				if err != nil {
+					log.Println("파일이 없습니다.")
+					break
+				}
+
+				// csv reader 생성
+				rdr := csv.NewReader(bufio.NewReader(file2))
+
+				// csv 내용 모두 읽기
+				rows, err = rdr.ReadAll()
+				if err != nil {
+					panic(err)
+				}
+				file2.Close()
+
+				for i, row := range rows {
+					for j := range row {
+						raws = append(raws, rows[i][j])
+					}
+				}
+
+				for _, item := range raws {
+					f.AddNewList(item)
+				}
+
+				os.Remove(rp + `/data_new.txt`)
+				break
+			}
+		}
+	}()
 
 	http.HandleFunc("/search", func(w http.ResponseWriter, req *http.Request) {
 		startTime := time.Now()
@@ -555,6 +636,7 @@ func main() {
 			SearchWord: sw,
 			Values:     f.Search(sw),
 		}
+
 		rbyte, _ := json.Marshal(r)
 		elapsedTime := time.Since(startTime)
 		fmt.Printf("실행시간: %s\n", elapsedTime)
